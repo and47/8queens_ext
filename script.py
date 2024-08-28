@@ -4,9 +4,11 @@ import main
 from argparse import ArgumentParser, ArgumentDefaultsHelpFormatter
 
 
-parser = ArgumentParser(description='Solve a chessboard puzzle', formatter_class=ArgumentDefaultsHelpFormatter)
-parser.add_argument("m", type=int, help="Board dimensions: horizontal axis")
-parser.add_argument("n", type=int, help="Board dimensions: vertical axis")
+parser = ArgumentParser(description='Solve a chessboard puzzle',
+                        formatter_class=ArgumentDefaultsHelpFormatter,
+                        epilog='Example: \n python script.py 8 8 --queen 8')
+parser.add_argument("w", type=int, help="Board dimensions: horizontal axis")
+parser.add_argument("h", type=int, help="Board dimensions: vertical axis")
 
 # 0 or 1 positional for each chess piece, with default 0
 parser.add_argument("king", nargs='?', default=0, type=int, help="Number of kings (optional, positional)")
@@ -28,6 +30,6 @@ parser.add_argument("--knight", dest="knight", type=int, default=0, help="Number
 # Parse the command-line arguments
 args_dict = vars(parser.parse_args())
 
-problem_setup = main.Board(**args_dict)
-main.solve(problem_setup)  # in Production can pass here all "technical" arguments, not all tested as part of homework
-print(problem_setup.count_layouts())
+task = main.Puzzle(**args_dict)
+task.run_solver()  # in actual use can pass here "technical" arguments for custom options, etc.
+print(task.count_layouts())

@@ -1,123 +1,105 @@
 from itertools import product
-from functools import cache
-from typing import Set, Tuple, Optional, Callable
+from functools import partial, cache
+from dataclasses import dataclass, field
+from enum import Enum, EnumMeta  # Python 3.11+ EnumType not EnumMeta
 
-from resources import chess_threats  # will be cached here
 
+@dataclass(frozen=True, slots=True)
+class ChessBoard:
+    # VALID_PIECES: ClassVar[tuple] = ('queen', 'rook', 'bishop', 'king', 'knight')  # add validation to-do?
+    w: int
+    h: int
+    coords: set = field(init=False)
+    pieces: 'PieceMoves' = field(init=False)
+    threat_cache: dict = field(default_factory=dict)
 
-class Board:
-    """
-    Very simplistic setup.  Does not track filled squares or pieces in them.  To-do: should cache threats (see resources.py)
-    """
-    def __init__(self, m: int, n: int, use_numpy: bool = False, threat_rules: Callable = chess_threats, **pieces):
-        self._m, self._n = m, n
-        self.solutions = set()
-        self._rules = threat_rules
-        self._coordinates = Board.generate_coords(m, n)
-        self._ops = {'rotate': rotate_180,  # default implementations
-                     'flip_vertically': reflect_vertically, 'flip_horizontally': reflect_horizontally}
-        if use_numpy:
-            self.switch_to_numpy()
-        self.pieces = {k.rstrip('s'): v for k, v in pieces.items()}  # simplified
+    def __post_init__(self):
+        object.__setattr__(self, 'coords', ChessBoard.generate_coords(self.w, self.h))
+        object.__setattr__(self, 'pieces', possible_moves_factory(self))
 
-    # def alloc_pieces(self, kings: int = 0, queens: int = 0, knights: int = 0, bishops: int = 0, rooks: int = 0):
-        # can add validation of pieces, e.g. check names or limit queens to 2/4 for a chess game
+    def threatens(self, piece_coord: tuple, piece_name: str) -> set:
+        if (k := (*piece_coord, piece_name)) in self.threat_cache:  # manual cache due to @cache bad with method (self)
+            res = self.threat_cache[k]
+        else:
+            placed_piece = getattr(self.pieces, piece_name)
+            res = placed_piece(piece_coord=piece_coord)
+            res.add(piece_coord)  # for performance, consider placement square itself as threatened/busy
+            self.threat_cache[k] = res
+        return res
 
-    def add_solutions(self, new_solutions: set):
-        # here can do validation, e.g. check that user/solver-added solutions actually contain valid coords and pieces
-        self.solutions.update(new_solutions)  # instead only check for empty ones upon return below
-
-    def get_solutions(self) -> set:
-        """
-        Valid (pieces not threatening each other) layouts - pieces and their coordinates
-        :return: all layouts (tuples of coordinates X, Y and name of chess piece or just hashes for optimized
-            caching performance)
-        """
-        self.solutions.discard(None)  # remove empty ("no solutions") as not a valid solution
-        # self.solutions.discard(frozenset({None}))  # remove empty ("no solutions") as not a valid solution
-        return self.solutions
-
-    def count_layouts(self) -> int:
-        return len(self.get_solutions())
+    @staticmethod  # for cache performance
+    @cache
+    def rotate_180(coordinates: tuple, w: int, h: int) -> tuple:
+        x, y, *meta = coordinates
+        return w - x - 1, h - y - 1
 
     @staticmethod
-    def generate_coords(m, n) -> tuple:
-        xs = range(1, m + 1)  # can add more dimensions, use numpy
-        ys = range(1, n + 1)
-        coords = sorted(product(xs, ys), key=lambda x: (x[1], x[0]))
-        return tuple(coords)  # "human-readable" sorted tuple (memoization requires this obj to be hashable)
-
-    @property
-    def coordinates(self) -> tuple:
-        return self._coordinates
-
-    @property
-    def dims(self) -> tuple:
-        return self._m, self._n
-
-    # this can be pre-computed. instead, similarly, I use memoization. Size of this cache is rather small
     @cache
-    def threatened(self, piece_coords: tuple, piece_name: str) -> set:
-        # should also e.g. validate coords belong onboard
-        squares_under_threat = self._rules(piece_coords, piece_name, self.coordinates)
-        return squares_under_threat
+    def reflect_vertically(coordinates: tuple, h: int) -> tuple:
+        x, y, *meta = coordinates
+        return x, h - y - 1
 
-    def switch_to_numpy(self):
-        from unused_for_numpy_sol import rotate_180, reflect_horizontally, reflect_vertically
-        self._ops = {'rotate': rotate_180,
-                     'flip_vertically': reflect_vertically, 'flip_horizontally': reflect_horizontally}
+    @staticmethod
+    @cache
+    def reflect_horizontally(coordinates: tuple, w: int) -> tuple:
+        x, y, *meta = coordinates
+        return w - x - 1, y
 
-    def rotate(self, coords):
-        # can validate coords belong onboard
-        f = self._ops['rotate']
-        return f(coords, *self.dims)
+    def rotations_reflections(self, coords: tuple[tuple]) -> set[tuple[tuple]]:
+        rotated = tuple(ChessBoard.rotate_180(xy, self.w, self.h) for xy in coords)
+        flipped_v = tuple(ChessBoard.reflect_vertically(xy, self.h) for xy in coords)
+        flipped_h = tuple(ChessBoard.reflect_horizontally(xy, self.w) for xy in coords)
+        return {rotated, flipped_v, flipped_h}
 
-    def flip_vertically(self, coords):
-        # can validate coords belong onboard
-        f = self._ops['flip_vertically']
-        return f(coords, *self.dims)
+    @staticmethod
+    def generate_coords(w: int, h: int) -> set:
+        xs = range(w)
+        ys = range(h)
+        coords = list(product(xs, ys))
+        # coords.sort(key=lambda xy: (xy[1], xy[0]))  # can use to "prioritize" e.g. corners or center
+        return set(coords)  # sorted ("human-readable") and hashable
 
-    def flip_horizontally(self, coords):
-        # can validate coords belong onboard
-        f = self._ops['flip_horizontally']
-        return f(coords, *self.dims)
+    # Static internal auxiliary data and functions for classic Chess piece moves and finding threatened squares
+    king_movement = [-1, 1, 0]  # from (0, 0): to {(0, 1), (-1, -1), (-1, 1), (1, 1), (1, -1), (-1, 0), (1, 0), (0, -1)}
+    king_moves = set(product(king_movement, repeat=2)) - {(0, 0)}
+    knight_movement = [-1, 1, -2, 2]  # (0, 0): { 2, 1), (1, 2), (-1, 2), (-2, 1), (-2, -1), (-1, -2), (1, -2), (2, -1)}
+    knight_moves = product(knight_movement, repeat=2)
+    knight_moves = {i for i in knight_moves if abs(i[0]) != abs(i[1])}
 
-    # for current solution and allowed rotation and reflections,
-    # accepts positions (coordinate X, Y and optionally piece name,
-    def all_rots_reflects(self, positions: Set[Tuple[int, int, Optional[str]]]) -> frozenset:
-        """
-        Get e.g. current solution and allowed rotation and reflections.  Or, for a situation (some filled and remaining
-         coordinates) leading to 0 solutions in a specific "game/puzzle" setup, get transformations that'd lead to same
-         outcome.
-        :param positions:
-        :return:
-        """
-        return frozenset((positions,
-                          # rotate_90(positions),
-                          self.rotate(positions),
-                          # rotate_270(positions),
-                          self.flip_vertically(positions),
-                          self.flip_horizontally(positions)))
+    LIMITED_MOVES = {'knight': knight_moves, 'king': king_moves}
+
+    def _possible_lim_moves(self, piece_name: str, piece_coord: tuple) -> set:
+        new_coords = {(piece_coord[0] + move[0], piece_coord[1] + move[1])
+                      for move in ChessBoard.LIMITED_MOVES[piece_name]}
+        return new_coords.intersection(self.coords)  # limits by chessboard N x M
+
+    def _bishop_moves(self, piece_coord: tuple) -> set:
+        # diagonal size is the minimum of (N, M) on N x M chessboard:
+        size = min(max(self.coords, key=lambda xy: xy[0])[0], max(self.coords, key=lambda xy: xy[1])[1])
+        new_coords = {(x + piece_coord[0], y + piece_coord[1]) for i in range(-size, size + 1) if i != 0
+                      for x, y in [(i, i), (-i, -i), (i, -i), (-i, i)]}
+        return new_coords.intersection(self.coords)  # limits by chessboard N x M
+
+    def _rook_moves(self, piece_coord: tuple) -> set:
+        new_coords = {i for i in self.coords if i[0] == piece_coord[0]}  # same x...
+        new_coords.update({i for i in self.coords if i[1] == piece_coord[1]})  # ...or y coordinate
+        return new_coords - {piece_coord}  # skip "not moving", not needed
 
 
 
+def possible_moves_factory(board: ChessBoard) -> EnumMeta:
+    class PieceMoves(Enum):
+        __slots__ = ()  # Declare __slots__ to avoid __dict__ creation
+        king   = partial(board._possible_lim_moves, piece_name='king')
+        knight = partial(board._possible_lim_moves, piece_name='knight')
+        rook   = board._rook_moves
+        bishop = board._bishop_moves
 
+        @classmethod
+        def queen(cls, *, piece_coord) -> set[tuple]:
+            return cls.rook(piece_coord=piece_coord) | cls.bishop(piece_coord=piece_coord)
 
-# to optimize - perform dashboards rotations/reflections, used when saving a solution to cache or
-# checking if inputs lead to "no solution" and using cache not to call recursive function
-# (see unused_for_numpy_sol.py for numpy version):
-# dashboard coordinates (x, y) start from bottom-left indexed (1,1)
-# def rotate_90(coordinates, m, _) -> frozenset:
-#     return frozenset((y, m + 1 - x, *rest) for x, y, *rest in coordinates)
+        def __call__(self, **kwargs):
+            return self.value(**kwargs)  # pre-caution: only allow keyword arguments not to mix in 'partial'
 
-def rotate_180(coordinates, m, n) -> frozenset:
-    return frozenset((m + 1 - x, n + 1 - y, *rest) for x, y, *rest in coordinates)
-
-# def rotate_270(coordinates, _, n) -> frozenset:
-#     return frozenset((n + 1 - y, x, *rest) for x, y, *rest in coordinates)
-
-def reflect_vertically(coordinates, _, n) -> frozenset:
-    return frozenset((x, n - y + 1, *rest) for x, y, *rest in coordinates)
-
-def reflect_horizontally(coordinates, m, _) -> frozenset:
-    return frozenset((m + 1 - x, y, *rest) for x, y, *rest in coordinates)
+    return PieceMoves
